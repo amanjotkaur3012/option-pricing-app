@@ -3,7 +3,6 @@ import yfinance as yf
 import numpy as np
 from scipy.stats import norm
 import matplotlib.pyplot as plt
-import math
 import pandas as pd
 
 # -------------------------------
@@ -55,6 +54,12 @@ def binomial_option_price(S, K, T, r, sigma, steps=100, option_type='call'):
         payoffs = [discount * (p*payoffs[j+1] + (1-p)*payoffs[j]) for j in range(i+1)]
     return payoffs[0]
 
+# --- Estimate Delta for Binomial using Finite Differences ---
+def delta_binomial(S, K, T, r, sigma, steps=100, option_type='call', h=0.01):
+    price_up = binomial_option_price(S+h, K, T, r, sigma, steps, option_type)
+    price_down = binomial_option_price(S-h, K, T, r, sigma, steps, option_type)
+    return (price_up - price_down) / (2*h)
+
 # -------------------------------
 # Streamlit App Layout
 # -------------------------------
@@ -73,7 +78,7 @@ It also visualizes how volatility, time, and spot price affect option values and
 # -------------------------------
 # Inputs
 # -------------------------------
-symbol = st.text_input("Enter a Stock or Index Symbol (e.g., RELIANCE.NS, INFY.NS, ^NSEI):", value="RELIANCE.NS")
+symbol = st.text_input("Enter a Stock or Index Symbol (e.g., NIFTY_MID_SELECT.NS, DLF.NS, RELIANCE.NS):", value="NIFTY_MID_SELECT.NS")
 
 if st.button("📥 Fetch Live Price"):
     S = get_live_price(symbol)
@@ -98,7 +103,8 @@ if 'S' in st.session_state:
             price, delta, gamma, theta, vega, rho = greeks(S, K, T, r, sigma, option_type)
         else:
             price = binomial_option_price(S, K, T, r, sigma, steps, option_type)
-            delta = gamma = theta = vega = rho = np.nan
+            delta = delta_binomial(S, K, T, r, sigma, steps, option_type)
+            gamma = theta = vega = rho = np.nan
 
         # --- Display Results ---
         st.subheader("📈 Option Valuation Results")
@@ -165,3 +171,4 @@ if 'S' in st.session_state:
         - 📊 For calls: higher spot price → higher option value  
         - 📉 For puts: higher spot price → lower option value
         """)
+
