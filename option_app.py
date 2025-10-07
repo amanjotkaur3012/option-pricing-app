@@ -1,4 +1,4 @@
-honestly --- this is what i did but the thing is we are not tought blacl scholes model till now so --- only binomial is taught to us -- ---- the python code is this -- import streamlit as st
+import streamlit as st
 import yfinance as yf
 import numpy as np
 from scipy.stats import norm
