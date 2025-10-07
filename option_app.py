@@ -43,9 +43,9 @@ symbol = st.text_input("Enter Stock Symbol (e.g. RELIANCE.NS, INFY.NS):", "RELIA
 
 if st.button("Fetch Live Price"):
     try:
-        S = get_live_price(symbol)
+        S = float(get_live_price(symbol))   # ✅ force to float
         st.success(f"✅ Live Spot Price for {symbol}: ₹{S}")
-        st.session_state['S'] = S
+        st.session_state['S'] = float(S)    # ✅ store as float
     except Exception as e:
         st.error("Could not fetch live price. Try another symbol.")
 
