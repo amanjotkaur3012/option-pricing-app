@@ -1,207 +1,219 @@
+# binomial_greeks_app.py
+# Streamlit app: CRR Binomial Option Pricing + Greeks (Delta, Gamma, Theta, Vega, Rho)
+# Prepared for: Assignment 1 Simulation (CIA III)
+# Author: Amanjot (adapted by ChatGPT)
+
 import streamlit as st
-import yfinance as yf
 import numpy as np
-from scipy.stats import norm
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.stats import norm
 
 # -------------------------------
-# Helper Functions
+# Binomial pricing (CRR) and Greeks via finite differences
 # -------------------------------
 
-def get_live_price(symbol):
-    """Fetch the latest live price from Yahoo Finance"""
-    try:
-        data = yf.download(symbol, period="1d", interval="1m", progress=False)
-        if data.empty:
-            data = yf.Ticker(symbol).history(period="1d")
-        return float(data['Close'].iloc[-1])
-    except Exception:
-        st.warning("⚠️ Could not fetch live data, using default ₹100")
-        return 100.0
+def binomial_option_price(S, K, T, r, sigma, steps=100, option_type='call', american=False):
+    """
+    Cox-Ross-Rubinstein binomial pricing (backward induction).
+    Returns option price (float).
+    """
+    if T <= 0 or steps <= 0:
+        return float(max(S - K, 0)) if option_type == 'call' else float(max(K - S, 0))
 
-# --- Black-Scholes Model ---
-def black_scholes(S, K, T, r, sigma, option_type='call'):
-    d1 = (np.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*np.sqrt(T))
-    d2 = d1 - sigma*np.sqrt(T)
-    if option_type == 'call':
-        price = S*norm.cdf(d1) - K*np.exp(-r*T)*norm.cdf(d2)
-    else:
-        price = K*np.exp(-r*T)*norm.cdf(-d2) - S*norm.cdf(-d1)
-    return price, d1, d2
-
-# --- Greeks ---
-def greeks(S, K, T, r, sigma, option_type='call'):
-    price, d1, d2 = black_scholes(S, K, T, r, sigma, option_type)
-    delta = norm.cdf(d1) if option_type == 'call' else -norm.cdf(-d1)
-    gamma = norm.pdf(d1)/(S*sigma*np.sqrt(T))
-    theta = (-S*norm.pdf(d1)*sigma/(2*np.sqrt(T))
-             - r*K*np.exp(-r*T)*norm.cdf(d2 if option_type=='call' else -d2))
-    vega = S*norm.pdf(d1)*np.sqrt(T)
-    rho = K*T*np.exp(-r*T)*norm.cdf(d2 if option_type=='call' else -d2)
-    return price, delta, gamma, theta, vega, rho
-
-# --- Binomial Model ---
-def binomial_option_price(S, K, T, r, sigma, steps=100, option_type='call'):
     dt = T / steps
+    # handle sigma ~= 0
+    if sigma <= 0:
+        payoff = max(S - K, 0) if option_type == 'call' else max(K - S, 0)
+        return float(np.exp(-r * T) * payoff)
+
     u = np.exp(sigma * np.sqrt(dt))
-    d = 1 / u
+    d = 1.0 / u
+    disc = np.exp(-r * dt)
     p = (np.exp(r * dt) - d) / (u - d)
-    discount = np.exp(-r * dt)
-    prices = [S * (u**j) * (d**(steps-j)) for j in range(steps+1)]
-    payoffs = [max(pS - K, 0) if option_type=='call' else max(K - pS, 0) for pS in prices]
-    for i in range(steps-1, -1, -1):
-        payoffs = [discount * (p*payoffs[j+1] + (1-p)*payoffs[j]) for j in range(i+1)]
-    return payoffs[0]
 
-# --- Estimate Delta for Binomial using Finite Differences ---
-def delta_binomial(S, K, T, r, sigma, steps=100, option_type='call', h=0.01):
-    price_up = binomial_option_price(S+h, K, T, r, sigma, steps, option_type)
-    price_down = binomial_option_price(S-h, K, T, r, sigma, steps, option_type)
-    return (price_up - price_down) / (2*h)
+    # terminal stock prices
+    prices = np.array([S * (u ** j) * (d ** (steps - j)) for j in range(steps + 1)])
+
+    # terminal payoffs
+    if option_type == 'call':
+        payoffs = np.maximum(prices - K, 0.0)
+    else:
+        payoffs = np.maximum(K - prices, 0.0)
+
+    # backward induction
+    for i in range(steps - 1, -1, -1):
+        payoffs = disc * (p * payoffs[1:i + 2] + (1 - p) * payoffs[0:i + 1])
+        if american:
+            prices_i = np.array([S * (u ** j) * (d ** (i - j)) for j in range(i + 1)])
+            if option_type == 'call':
+                payoffs = np.maximum(payoffs, prices_i - K)
+            else:
+                payoffs = np.maximum(payoffs, K - prices_i)
+
+    return float(payoffs[0])
+
+
+def greeks_binomial(S, K, T, r, sigma, steps=200, option_type='call'):
+    """
+    Compute Greeks using centered finite differences based on the CRR price.
+    Returns dict: price, delta, gamma, theta_per_day, vega, rho_per_pct
+    """
+    # baseline price
+    price = binomial_option_price(S, K, T, r, sigma, steps, option_type)
+
+    # choose bumps
+    eps_S = max(0.01, 0.001 * S)           # spot bump
+    eps_sigma = max(1e-4, 0.001 * max(sigma, 0.01))  # vol bump
+    eps_r = 1e-4                           # rate bump (absolute)
+    eps_days = 1                           # theta per 1 day
+
+    # Delta: central difference
+    price_up = binomial_option_price(S + eps_S, K, T, r, sigma, steps, option_type)
+    price_down = binomial_option_price(S - eps_S, K, T, r, sigma, steps, option_type)
+    delta = (price_up - price_down) / (2 * eps_S)
+
+    # Gamma: second derivative wrt S
+    gamma = (price_up - 2 * price + price_down) / (eps_S ** 2)
+
+    # Theta per day: use T - 1 day
+    dt_day = eps_days / 365.0
+    T_minus = max(1/365.0, T - dt_day)
+    price_Tminus = binomial_option_price(S, K, T_minus, r, sigma, steps, option_type)
+    # theta_per_day = (price_Tminus - price) / dt_day  (price drops as time passes -> negative)
+    theta_per_day = (price_Tminus - price) / dt_day
+
+    # Vega: central difference in sigma
+    price_sigma_up = binomial_option_price(S, K, T, r, sigma + eps_sigma, steps, option_type)
+    price_sigma_down = binomial_option_price(S, K, T, r, max(1e-8, sigma - eps_sigma), steps, option_type)
+    vega = (price_sigma_up - price_sigma_down) / (2 * eps_sigma)
+
+    # Rho: central difference in rate (per absolute 1.0). Convert to per 1% (multiply by 0.01)
+    price_r_up = binomial_option_price(S, K, T, r + eps_r, sigma, steps, option_type)
+    price_r_down = binomial_option_price(S, K, T, r - eps_r, sigma, steps, option_type)
+    rho_per_abs = (price_r_up - price_r_down) / (2 * eps_r)
+    rho_per_pct = rho_per_abs * 0.01
+
+    return {
+        'price': price,
+        'delta': delta,
+        'gamma': gamma,
+        'theta_per_day': theta_per_day,
+        'vega': vega,
+        'rho_per_pct': rho_per_pct
+    }
+
 
 # -------------------------------
-# Streamlit App Layout
+# Streamlit UI (focused on Binomial + Greeks)
 # -------------------------------
 
-st.set_page_config(page_title="Option Pricing Model", page_icon="📈", layout="wide")
-st.title("📊 Option Pricing and Greeks Calculator")
-st.caption("Developed by Amanjot Kaur | MSc Finance & Analytics | Christ University")
+st.set_page_config(page_title='Binomial Pricing + Greeks', layout='wide')
+st.title('📊 Binomial Option Pricing — CRR + Greeks')
+st.caption('Simplified app: computes binomial option price and Greeks via finite differences')
 
-st.markdown("""
-This interactive tool prices **Index or Equity Options** using:
-- **Black-Scholes Model**
-- **Binomial Tree Model**
-It also visualizes how volatility, time, and spot price affect option values and Greeks.
-""")
+st.markdown('''
+This tool prices **European or American** options using the Cox–Ross–Rubinstein (CRR) binomial tree
+and estimates the Greeks (Delta, Gamma, Theta per day, Vega, Rho) using finite differences.
 
-# -------------------------------
-# Inputs
-# -------------------------------
-symbol = st.text_input(
-    "Enter a Stock or Index Symbol (e.g., NIFTY_MID_SELECT.NS, DLF.NS, RELIANCE.NS):",
-    value="NIFTY_MID_SELECT.NS"
-)
+Use this for scenario analysis required by your assignment.
+''')
 
-if st.button("📥 Fetch Live Price"):
-    S = get_live_price(symbol)
-    st.success(f"✅ Live Price for {symbol}: ₹{S}")
-    st.session_state['S'] = S
+# Input panel
+with st.sidebar.form('inputs'):
+    st.header('Inputs')
+    S = st.number_input('Spot Price (S)', value=150.0, step=1.0)
+    K = st.number_input('Strike Price (K)', value=160.0, step=1.0)
+    days = st.number_input('Days to expiry', min_value=1, max_value=3650, value=30, step=1)
+    r_pct = st.number_input('Risk-free rate (annual %)', value=6.0, step=0.01)
+    sigma_pct = st.number_input('Volatility (annual %)', value=25.0, step=0.1)
+    option_type = st.selectbox('Option type', ('call', 'put'))
+    steps = st.slider('Binomial steps', min_value=1, max_value=2000, value=200, step=1)
+    american = st.checkbox('American option (allow early exercise)', value=False)
+    submit = st.form_submit_button('Calculate')
 
-if 'S' in st.session_state:
-    S = st.session_state['S']
+r = r_pct / 100.0
+sigma = sigma_pct / 100.0
+T = days / 365.0
 
-    st.subheader("🔧 Option Input Parameters")
-    K = st.number_input("Strike Price (₹)", value=S, step=10.0)
-    days = st.number_input("Days to Expiry", value=30, step=5)
-    r = st.number_input("Risk-free Interest Rate (%)", value=6.0, step=0.1) / 100
-    sigma = st.number_input("Volatility (%)", value=25.0, step=1.0) / 100
-    option_type = st.radio("Option Type", ["call", "put"], horizontal=True)
-    model = st.radio("Select Model", ["Black-Scholes", "Binomial"], horizontal=True)
-    steps = st.slider("Binomial Steps (if using Binomial Model)", 10, 200, 100)
-    T = days / 365
+if submit:
+    # compute
+    price = binomial_option_price(S, K, T, r, sigma, steps, option_type, american)
+    g = greeks_binomial(S, K, T, r, sigma, steps, option_type)
 
-    if st.button("🧮 Calculate Option Price"):
-        # Calculate option price and Greeks
-        if model == "Black-Scholes":
-            price, delta, gamma, theta, vega, rho = greeks(S, K, T, r, sigma, option_type)
-            price_bs = price
-            delta_bs = delta
-            price_bin = binomial_option_price(S, K, T, r, sigma, steps, option_type)
-            delta_bin = delta_binomial(S, K, T, r, sigma, steps, option_type)
-        else:
-            price = binomial_option_price(S, K, T, r, sigma, steps, option_type)
-            delta = delta_binomial(S, K, T, r, sigma, steps, option_type)
-            gamma = theta = vega = rho = np.nan
-            price_bin = price
-            delta_bin = delta
-            price_bs, delta_bs, gamma_bs, theta_bs, vega_bs, rho_bs = greeks(S, K, T, r, sigma, option_type)
+    # display results
+    st.subheader('Result — Binomial Model')
+    c1, c2, c3 = st.columns(3)
+    c1.metric('Option Price (₹)', f"{g['price']:.6f}")
+    c2.metric('Delta', f"{g['delta']:.6f}")
+    c3.metric('Gamma', f"{g['gamma']:.6f}")
 
-        # --- Display Results ---
-        st.subheader("📈 Option Valuation Results")
-        st.metric("Option Price (₹)", f"{price:.2f}")
+    c4, c5, c6 = st.columns(3)
+    c4.metric('Theta (per day)', f"{g['theta_per_day']:.6f}")
+    c5.metric('Vega', f"{g['vega']:.6f}")
+    c6.metric('Rho (per 1%)', f"{g['rho_per_pct']:.6f}")
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Delta", f"{delta:.4f}")
-        c2.metric("Gamma", f"{gamma:.6f}")
-        c3.metric("Theta", f"{theta:.4f}")
+    # quick comparison: small scenario table
+    st.subheader('Scenario Table — change one input at a time')
+    scenarios = []
+    # vary spot
+    for s in [S * 0.9, S, S * 1.1]:
+        p = binomial_option_price(s, K, T, r, sigma, steps, option_type, american)
+        gtmp = greeks_binomial(s, K, T, r, sigma, steps, option_type)
+        scenarios.append({'Scenario': f'Spot={s:.2f}', 'Price': p, 'Delta': gtmp['delta'], 'Theta/day': gtmp['theta_per_day']})
+    # vary sigma
+    for sp in [sigma * 0.5, sigma, sigma * 1.5]:
+        p = binomial_option_price(S, K, T, r, sp, steps, option_type, american)
+        gtmp = greeks_binomial(S, K, T, r, sp, steps, option_type)
+        scenarios.append({'Scenario': f'Vol={sp*100:.1f}%', 'Price': p, 'Delta': gtmp['delta'], 'Theta/day': gtmp['theta_per_day']})
 
-        c4, c5 = st.columns(2)
-        c4.metric("Vega", f"{vega:.4f}")
-        c5.metric("Rho", f"{rho:.4f}")
+    df_scen = pd.DataFrame(scenarios)
+    st.dataframe(df_scen, use_container_width=True)
 
-        # -------------------------------
-        # Comparative Table: BS vs Binomial
-        df_compare = pd.DataFrame({
-            "Model": ["Black-Scholes", "Binomial"],
-            "Option Price (₹)": [price_bs, price_bin],
-            "Delta": [delta_bs, delta_bin],
-            "Gamma": [gamma_bs if 'gamma_bs' in locals() else np.nan, np.nan],
-            "Theta": [theta_bs if 'theta_bs' in locals() else np.nan, np.nan],
-            "Vega": [vega_bs if 'vega_bs' in locals() else np.nan, np.nan],
-            "Rho": [rho_bs if 'rho_bs' in locals() else np.nan, np.nan]
-        })
-        st.subheader("📊 Comparative Table: Black-Scholes vs Binomial")
-        st.dataframe(df_compare, use_container_width=True)
+    # plots for report
+    st.subheader('Charts for report')
+    # Price vs Volatility
+    vols = np.linspace(max(0.01, sigma * 0.5), sigma * 2.0, 20)
+    prices_vol = [binomial_option_price(S, K, T, r, v, steps, option_type, american) for v in vols]
+    fig1, ax1 = plt.subplots()
+    ax1.plot(vols * 100, prices_vol, marker='o')
+    ax1.set_xlabel('Volatility (%)')
+    ax1.set_ylabel('Option Price (₹)')
+    ax1.set_title('Option Price vs Volatility (Binomial)')
+    ax1.grid(True, linestyle='--', alpha=0.5)
+    st.pyplot(fig1)
 
-        # -------------------------------
-        # Scenario Analysis Charts
+    # Price vs Spot
+    spots = np.linspace(S * 0.7, S * 1.3, 20)
+    prices_spot = [binomial_option_price(s, K, T, r, sigma, steps, option_type, american) for s in spots]
+    fig2, ax2 = plt.subplots()
+    ax2.plot(spots, prices_spot, marker='o')
+    ax2.set_xlabel('Spot Price (₹)')
+    ax2.set_ylabel('Option Price (₹)')
+    ax2.set_title('Option Price vs Spot Price (Binomial)')
+    ax2.grid(True, linestyle='--', alpha=0.5)
+    st.pyplot(fig2)
 
-        # Option Price vs Volatility
-        vols = np.linspace(0.05, 0.6, 20)
-        prices_vol = [black_scholes(S, K, T, r, v, option_type)[0] for v in vols]
-        fig1, ax1 = plt.subplots()
-        ax1.plot(vols*100, prices_vol, color='purple', marker='o')
-        ax1.set_title("Option Price vs Volatility")
-        ax1.set_xlabel("Volatility (%)")
-        ax1.set_ylabel("Option Price (₹)")
-        ax1.grid(True, linestyle='--', alpha=0.6)
-        st.pyplot(fig1)
+    # Delta vs Vol
+    deltas_vol = [greeks_binomial(S, K, T, r, v, steps, option_type)['delta'] for v in vols]
+    fig3, ax3 = plt.subplots()
+    ax3.plot(vols * 100, deltas_vol, marker='o')
+    ax3.set_xlabel('Volatility (%)')
+    ax3.set_ylabel('Delta')
+    ax3.set_title('Delta vs Volatility (Binomial)')
+    ax3.grid(True, linestyle='--', alpha=0.5)
+    st.pyplot(fig3)
 
-        # Option Price vs Spot Price
-        spots = np.linspace(S*0.8, S*1.2, 20)
-        prices_spot = [black_scholes(s, K, T, r, sigma, option_type)[0] for s in spots]
-        fig2, ax2 = plt.subplots()
-        ax2.plot(spots, prices_spot, color='teal', marker='o')
-        ax2.set_title("Option Price vs Spot Price")
-        ax2.set_xlabel("Spot Price (₹)")
-        ax2.set_ylabel("Option Price (₹)")
-        ax2.grid(True, linestyle='--', alpha=0.6)
-        st.pyplot(fig2)
+    st.markdown('''
+    **Report tips:** include the scenario table, charts above, and short interpretations:
+    - How price changes with volatility, spot and time
+    - How Greeks change and what that implies for hedging
+    - Mention assumptions (no dividends by default, continuous compounding of r in tree)
+    ''')
 
-        # Option Price vs Time to Expiry
-        times = np.linspace(5/365, 90/365, 20)
-        prices_time = [black_scholes(S, K, t, r, sigma, option_type)[0] for t in times]
-        fig3, ax3 = plt.subplots()
-        ax3.plot(times*365, prices_time, color='darkorange', marker='o')
-        ax3.set_title("Option Price vs Days to Expiry")
-        ax3.set_xlabel("Days to Expiry")
-        ax3.set_ylabel("Option Price (₹)")
-        ax3.grid(True, linestyle='--', alpha=0.6)
-        st.pyplot(fig3)
+    # export option: CSV of scenario table
+    csv = df_scen.to_csv(index=False).encode('utf-8')
+    st.download_button(label='Download scenario table (CSV)', data=csv, file_name='binomial_scenarios.csv', mime='text/csv')
 
-        # Option Price vs Strike Price
-        strike_range = np.linspace(S*0.8, S*1.2, 20)
-        prices_strike = [black_scholes(S, k, T, r, sigma, option_type)[0] for k in strike_range]
-        fig_strike, ax_strike = plt.subplots()
-        ax_strike.plot(strike_range, prices_strike, color='green', marker='o')
-        ax_strike.set_title("Option Price vs Strike Price (Black-Scholes)")
-        ax_strike.set_xlabel("Strike Price (₹)")
-        ax_strike.set_ylabel("Option Price (₹)")
-        ax_strike.grid(True, linestyle='--', alpha=0.6)
-        st.pyplot(fig_strike)
-
-        # --- Summary Table ---
-        df = pd.DataFrame({
-            "Volatility (%)": vols*100,
-            "Option Price (₹)": prices_vol
-        })
-        st.dataframe(df, use_container_width=True)
-
-        st.info("""
-        **Key Insights:**
-        - 📈 Higher volatility → higher option price (Vega effect)
-        - ⏳ Longer time to expiry → higher option value (Theta effect)
-        - 📊 For calls: higher spot price → higher option value  
-        - 📉 For puts: higher spot price → lower option value
-        """)
+st.markdown('---')
+st.caption('This app focuses on the CRR binomial model and computes Greeks required for your assignment.')
