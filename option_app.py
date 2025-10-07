@@ -78,7 +78,10 @@ It also visualizes how volatility, time, and spot price affect option values and
 # -------------------------------
 # Inputs
 # -------------------------------
-symbol = st.text_input("Enter a Stock or Index Symbol (e.g., NIFTY_MID_SELECT.NS, DLF.NS, RELIANCE.NS):", value="NIFTY_MID_SELECT.NS")
+symbol = st.text_input(
+    "Enter a Stock or Index Symbol (e.g., NIFTY_MID_SELECT.NS, DLF.NS, RELIANCE.NS):",
+    value="NIFTY_MID_SELECT.NS"
+)
 
 if st.button("📥 Fetch Live Price"):
     S = get_live_price(symbol)
@@ -99,12 +102,20 @@ if 'S' in st.session_state:
     T = days / 365
 
     if st.button("🧮 Calculate Option Price"):
+        # Calculate option price and Greeks
         if model == "Black-Scholes":
             price, delta, gamma, theta, vega, rho = greeks(S, K, T, r, sigma, option_type)
+            price_bs = price
+            delta_bs = delta
+            price_bin = binomial_option_price(S, K, T, r, sigma, steps, option_type)
+            delta_bin = delta_binomial(S, K, T, r, sigma, steps, option_type)
         else:
             price = binomial_option_price(S, K, T, r, sigma, steps, option_type)
             delta = delta_binomial(S, K, T, r, sigma, steps, option_type)
             gamma = theta = vega = rho = np.nan
+            price_bin = price
+            delta_bin = delta
+            price_bs, delta_bs, gamma_bs, theta_bs, vega_bs, rho_bs = greeks(S, K, T, r, sigma, option_type)
 
         # --- Display Results ---
         st.subheader("📈 Option Valuation Results")
@@ -120,11 +131,23 @@ if 'S' in st.session_state:
         c5.metric("Rho", f"{rho:.4f}")
 
         # -------------------------------
-        # Scenario Analysis
-        # -------------------------------
-        st.subheader("📊 Scenario Analysis Charts")
+        # Comparative Table: BS vs Binomial
+        df_compare = pd.DataFrame({
+            "Model": ["Black-Scholes", "Binomial"],
+            "Option Price (₹)": [price_bs, price_bin],
+            "Delta": [delta_bs, delta_bin],
+            "Gamma": [gamma_bs if 'gamma_bs' in locals() else np.nan, np.nan],
+            "Theta": [theta_bs if 'theta_bs' in locals() else np.nan, np.nan],
+            "Vega": [vega_bs if 'vega_bs' in locals() else np.nan, np.nan],
+            "Rho": [rho_bs if 'rho_bs' in locals() else np.nan, np.nan]
+        })
+        st.subheader("📊 Comparative Table: Black-Scholes vs Binomial")
+        st.dataframe(df_compare, use_container_width=True)
 
-        # --- Option Price vs Volatility ---
+        # -------------------------------
+        # Scenario Analysis Charts
+
+        # Option Price vs Volatility
         vols = np.linspace(0.05, 0.6, 20)
         prices_vol = [black_scholes(S, K, T, r, v, option_type)[0] for v in vols]
         fig1, ax1 = plt.subplots()
@@ -135,7 +158,7 @@ if 'S' in st.session_state:
         ax1.grid(True, linestyle='--', alpha=0.6)
         st.pyplot(fig1)
 
-        # --- Option Price vs Spot Price ---
+        # Option Price vs Spot Price
         spots = np.linspace(S*0.8, S*1.2, 20)
         prices_spot = [black_scholes(s, K, T, r, sigma, option_type)[0] for s in spots]
         fig2, ax2 = plt.subplots()
@@ -146,7 +169,7 @@ if 'S' in st.session_state:
         ax2.grid(True, linestyle='--', alpha=0.6)
         st.pyplot(fig2)
 
-        # --- Option Price vs Time to Expiry ---
+        # Option Price vs Time to Expiry
         times = np.linspace(5/365, 90/365, 20)
         prices_time = [black_scholes(S, K, t, r, sigma, option_type)[0] for t in times]
         fig3, ax3 = plt.subplots()
@@ -156,6 +179,17 @@ if 'S' in st.session_state:
         ax3.set_ylabel("Option Price (₹)")
         ax3.grid(True, linestyle='--', alpha=0.6)
         st.pyplot(fig3)
+
+        # Option Price vs Strike Price
+        strike_range = np.linspace(S*0.8, S*1.2, 20)
+        prices_strike = [black_scholes(S, k, T, r, sigma, option_type)[0] for k in strike_range]
+        fig_strike, ax_strike = plt.subplots()
+        ax_strike.plot(strike_range, prices_strike, color='green', marker='o')
+        ax_strike.set_title("Option Price vs Strike Price (Black-Scholes)")
+        ax_strike.set_xlabel("Strike Price (₹)")
+        ax_strike.set_ylabel("Option Price (₹)")
+        ax_strike.grid(True, linestyle='--', alpha=0.6)
+        st.pyplot(fig_strike)
 
         # --- Summary Table ---
         df = pd.DataFrame({
@@ -171,4 +205,3 @@ if 'S' in st.session_state:
         - 📊 For calls: higher spot price → higher option value  
         - 📉 For puts: higher spot price → lower option value
         """)
-
