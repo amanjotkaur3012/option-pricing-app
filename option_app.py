@@ -37,34 +37,40 @@ def binomial_option_price(S, K, T, r, sigma, steps=100, option_type='call'):
 
     return payoffs[0]
 
-# --- Greeks (Numerical Approximations for Binomial Model) ---
-def calculate_greeks_binomial(S, K, T, r, sigma, steps=100, option_type='call', h=0.01):
+# --- Greeks (Finite Difference with Scaled Step) ---
+def calculate_greeks_binomial(S, K, T, r, sigma, steps=100, option_type='call'):
+    # Scale step size with spot price
+    h = 0.01 * S  # 1% of spot price
+    
     price = binomial_option_price(S, K, T, r, sigma, steps, option_type)
     
     # Delta
-    delta = (binomial_option_price(S+h, K, T, r, sigma, steps, option_type) -
-             binomial_option_price(S-h, K, T, r, sigma, steps, option_type)) / (2*h)
+    price_up = binomial_option_price(S + h, K, T, r, sigma, steps, option_type)
+    price_down = binomial_option_price(S - h, K, T, r, sigma, steps, option_type)
+    delta = (price_up - price_down) / (2 * h)
     
     # Gamma
-    price_up = binomial_option_price(S+h, K, T, r, sigma, steps, option_type)
-    price_down = binomial_option_price(S-h, K, T, r, sigma, steps, option_type)
     gamma = (price_up - 2*price + price_down) / (h**2)
     
-    # Theta
-    dt = 1/365  # 1 day in years
+    # Theta (time decay for 1 day)
+    dt = 1/365
     if T > dt:
-        theta = (binomial_option_price(S, K, T, r, sigma, steps, option_type) -
-                 binomial_option_price(S, K, T-dt, r, sigma, steps, option_type)) / dt
+        price_theta = binomial_option_price(S, K, T-dt, r, sigma, steps, option_type)
+        theta = (price - price_theta) / dt
     else:
         theta = np.nan
     
     # Vega
-    vega = (binomial_option_price(S, K, T, r, sigma+h, steps, option_type) -
-            binomial_option_price(S, K, T, r, sigma-h, steps, option_type)) / (2*h)
+    h_vol = 0.01  # 1% change in volatility
+    price_vol_up = binomial_option_price(S, K, T, r, sigma+h_vol, steps, option_type)
+    price_vol_down = binomial_option_price(S, K, T, r, sigma-h_vol, steps, option_type)
+    vega = (price_vol_up - price_vol_down) / (2*h_vol)
     
     # Rho
-    rho = (binomial_option_price(S, K, T, r+h, sigma, steps, option_type) -
-           binomial_option_price(S, K, T, r-h, sigma, steps, option_type)) / (2*h)
+    h_r = 0.0001  # small rate change
+    price_r_up = binomial_option_price(S, K, T, r+h_r, sigma, steps, option_type)
+    price_r_down = binomial_option_price(S, K, T, r-h_r, sigma, steps, option_type)
+    rho = (price_r_up - price_r_down) / (2*h_r)
     
     return price, delta, gamma, theta, vega, rho
 
@@ -112,19 +118,10 @@ if 'S' in st.session_state:
     with st.expander("ℹ️ Option Greeks Explained"):
         st.markdown("""
         **Delta (Δ):** Measures how much the option price changes for a small change in the underlying stock price.  
-        - Positive for calls, negative for puts.  
-
         **Gamma (Γ):** Measures how much Delta changes as the underlying price changes.  
-        - High Gamma → Delta changes quickly, option is sensitive to spot price movements.  
-
         **Theta (Θ):** Measures time decay — how much the option loses value as time passes.  
-        - Negative for long options (they lose value as expiry approaches).  
-
         **Vega (ν):** Measures sensitivity of option price to volatility.  
-        - Higher volatility → higher option price.  
-
         **Rho (ρ):** Measures sensitivity to the risk-free interest rate.  
-        - Call options increase in value if rates rise, puts decrease.  
         """)
 
     if st.button("🧮 Calculate Option Price"):
