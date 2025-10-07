@@ -37,11 +37,36 @@ def binomial_option_price(S, K, T, r, sigma, steps=100, option_type='call'):
 
     return payoffs[0]
 
-# --- Delta (Finite Difference Approximation) ---
-def delta_binomial(S, K, T, r, sigma, steps=100, option_type='call', h=0.01):
-    price_up = binomial_option_price(S + h, K, T, r, sigma, steps, option_type)
-    price_down = binomial_option_price(S - h, K, T, r, sigma, steps, option_type)
-    return (price_up - price_down) / (2 * h)
+# --- Greeks (Numerical Approximations for Binomial Model) ---
+def calculate_greeks_binomial(S, K, T, r, sigma, steps=100, option_type='call', h=0.01):
+    price = binomial_option_price(S, K, T, r, sigma, steps, option_type)
+    
+    # Delta
+    delta = (binomial_option_price(S+h, K, T, r, sigma, steps, option_type) -
+             binomial_option_price(S-h, K, T, r, sigma, steps, option_type)) / (2*h)
+    
+    # Gamma
+    price_up = binomial_option_price(S+h, K, T, r, sigma, steps, option_type)
+    price_down = binomial_option_price(S-h, K, T, r, sigma, steps, option_type)
+    gamma = (price_up - 2*price + price_down) / (h**2)
+    
+    # Theta
+    dt = 1/365  # 1 day in years
+    if T > dt:
+        theta = (binomial_option_price(S, K, T, r, sigma, steps, option_type) -
+                 binomial_option_price(S, K, T-dt, r, sigma, steps, option_type)) / dt
+    else:
+        theta = np.nan
+    
+    # Vega
+    vega = (binomial_option_price(S, K, T, r, sigma+h, steps, option_type) -
+            binomial_option_price(S, K, T, r, sigma-h, steps, option_type)) / (2*h)
+    
+    # Rho
+    rho = (binomial_option_price(S, K, T, r+h, sigma, steps, option_type) -
+           binomial_option_price(S, K, T, r-h, sigma, steps, option_type)) / (2*h)
+    
+    return price, delta, gamma, theta, vega, rho
 
 # -------------------------------
 # Streamlit App Layout
@@ -54,9 +79,6 @@ st.caption("Developed by Amanjot Kaur | MSc Finance & Analytics | Christ Univers
 st.markdown("""
 This interactive tool prices **Equity or Index Options** using the **Binomial Tree Model**  
 and analyzes how volatility, time, and spot price affect option values.
-
-📘 *Note:* Only **Delta** is computed here, as other Greeks (Gamma, Theta, Vega, Rho)  
-are complex to estimate accurately in discrete-time Binomial models.
 """)
 
 # -------------------------------
@@ -84,24 +106,49 @@ if 'S' in st.session_state:
     steps = st.slider("Binomial Steps", 10, 200, 100)
     T = days / 365
 
+    # -------------------------------
+    # Theory / Explanation Box
+    # -------------------------------
+    with st.expander("ℹ️ Option Greeks Explained"):
+        st.markdown("""
+        **Delta (Δ):** Measures how much the option price changes for a small change in the underlying stock price.  
+        - Positive for calls, negative for puts.  
+
+        **Gamma (Γ):** Measures how much Delta changes as the underlying price changes.  
+        - High Gamma → Delta changes quickly, option is sensitive to spot price movements.  
+
+        **Theta (Θ):** Measures time decay — how much the option loses value as time passes.  
+        - Negative for long options (they lose value as expiry approaches).  
+
+        **Vega (ν):** Measures sensitivity of option price to volatility.  
+        - Higher volatility → higher option price.  
+
+        **Rho (ρ):** Measures sensitivity to the risk-free interest rate.  
+        - Call options increase in value if rates rise, puts decrease.  
+        """)
+
     if st.button("🧮 Calculate Option Price"):
-        # --- Calculate Binomial Price & Delta ---
-        price = binomial_option_price(S, K, T, r, sigma, steps, option_type)
-        delta = delta_binomial(S, K, T, r, sigma, steps, option_type)
+        # --- Calculate Price & Greeks ---
+        price, delta, gamma, theta, vega, rho = calculate_greeks_binomial(S, K, T, r, sigma, steps, option_type)
 
         # --- Display Results ---
         st.subheader("📈 Option Valuation Results (Binomial Model)")
         st.metric("Option Price (₹)", f"{price:.2f}")
 
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         c1.metric("Delta", f"{delta:.4f}")
-        c2.markdown("**Other Greeks:** N/A for Binomial Model")
+        c2.metric("Gamma", f"{gamma:.6f}")
+        c3.metric("Theta", f"{theta:.4f}")
+
+        c4, c5 = st.columns(2)
+        c4.metric("Vega", f"{vega:.4f}")
+        c5.metric("Rho", f"{rho:.4f}")
 
         # -------------------------------
         # Scenario Analysis Charts
         vols = np.linspace(0.05, 0.6, 20)
         prices_vol = [binomial_option_price(S, K, T, r, v, steps, option_type) for v in vols]
-        fig1, ax1 = plt.subplots()
+        fig1, ax1 = plt.subplots(figsize=(6, 4))
         ax1.plot(vols*100, prices_vol, color='purple', marker='o')
         ax1.set_title("Option Price vs Volatility (Binomial Model)")
         ax1.set_xlabel("Volatility (%)")
@@ -111,7 +158,7 @@ if 'S' in st.session_state:
 
         spots = np.linspace(S*0.8, S*1.2, 20)
         prices_spot = [binomial_option_price(s, K, T, r, sigma, steps, option_type) for s in spots]
-        fig2, ax2 = plt.subplots()
+        fig2, ax2 = plt.subplots(figsize=(6, 4))
         ax2.plot(spots, prices_spot, color='teal', marker='o')
         ax2.set_title("Option Price vs Spot Price (Binomial Model)")
         ax2.set_xlabel("Spot Price (₹)")
@@ -121,7 +168,7 @@ if 'S' in st.session_state:
 
         times = np.linspace(5/365, 90/365, 20)
         prices_time = [binomial_option_price(S, K, t, r, sigma, steps, option_type) for t in times]
-        fig3, ax3 = plt.subplots()
+        fig3, ax3 = plt.subplots(figsize=(6, 4))
         ax3.plot(times*365, prices_time, color='darkorange', marker='o')
         ax3.set_title("Option Price vs Days to Expiry (Binomial Model)")
         ax3.set_xlabel("Days to Expiry")
@@ -131,7 +178,7 @@ if 'S' in st.session_state:
 
         strike_range = np.linspace(S*0.8, S*1.2, 20)
         prices_strike = [binomial_option_price(S, k, T, r, sigma, steps, option_type) for k in strike_range]
-        fig_strike, ax_strike = plt.subplots()
+        fig_strike, ax_strike = plt.subplots(figsize=(6, 4))
         ax_strike.plot(strike_range, prices_strike, color='green', marker='o')
         ax_strike.set_title("Option Price vs Strike Price (Binomial Model)")
         ax_strike.set_xlabel("Strike Price (₹)")
